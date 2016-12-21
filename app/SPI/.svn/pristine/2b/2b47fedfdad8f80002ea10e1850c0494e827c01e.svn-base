@@ -1,0 +1,35 @@
+#ifndef SPI_H
+#define SPI_H
+
+//管脚
+#define GPIO_PIN(x)			 (GPIO_Pin_##x)
+#define GPIO_PinSource(x) (GPIO_PinSource##x)
+
+
+/*---------------SPI1--只初始化SCK,MISO,MOSI三线，CS需要单独配置-------------*/
+#define SPI1_RCC_CLK                RCC_APB1Periph_SPI1
+#define SPI1_GPIO_PORT              GPIOB
+#define SPI1_RCC                    RCC_AHB1Periph_GPIOB
+#define SPI1_SCK                    GPIO_Pin_3
+#define SPI1_MISO                   GPIO_Pin_4
+#define SPI1_MOSI                   GPIO_Pin_5
+#define SPI1_SCK_SOURCE             GPIO_PinSource3
+#define SPI1_MISO_SOURCE            GPIO_PinSource4
+#define SPI1_MOSI_SOURCE            GPIO_PinSource5
+
+
+/*---------------SPI2--只初始化SCK,MISO,MOSI三线，CS需要单独配置-------------*/
+#define SPI2_RCC_CLK                RCC_APB1Periph_SPI2
+#define SPI2_GPIO_PORT              GPIOB
+#define SPI2_RCC                    RCC_AHB1Periph_GPIOB
+#define SPI2_SCK                    GPIO_Pin_13
+#define SPI2_MISO                   GPIO_Pin_14
+#define SPI2_MOSI                   GPIO_Pin_15
+#define SPI2_SCK_SOURCE             GPIO_PinSource13
+#define SPI2_MISO_SOURCE            GPIO_PinSource14
+#define SPI2_MOSI_SOURCE            GPIO_PinSource15
+
+
+
+#endif //endof SPI_H
+

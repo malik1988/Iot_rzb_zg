@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<project name="Component Document project" default="ComponentDoc">
+    <property name="doxygen" value="C:/CooCox/CoIDE_V2Beta/Library/doxygen/doxygen.exe"/>
+    <property name="Component_Root_Dir" value="../"/>
+    
+    <!-- Product Components Document -->
+    <target name="ComponentDoc">
+
+        <mkdir dir="${Component_Root_Dir}\Output"/>
+    
+        <exec dir="${Component_Root_Dir}\doxygen" executable="${doxygen}">
+            <arg value="Doxyfile"/>
+        </exec>
+		
+		<copy todir="${Component_Root_Dir}\Output\doxygen\html" overwrite = "true">
+			<fileset dir="${Component_Root_Dir}\doxygen\assets\include" />
+            <fileset dir="${Component_Root_Dir}\doxygen\assets\images" />
+            <fileset dir="${Component_Root_Dir}\doxygen\assets\javascripts" />
+            <fileset dir="${Component_Root_Dir}\doxygen\assets\stylesheets" />
+		</copy> 
+        <copy todir="${Component_Root_Dir}\Output\doxygen\html\assets" overwrite = "true">
+            <fileset dir="${Component_Root_Dir}\assets" />
+		</copy> 
+    </target>
+	
+	<target name="clean">
+	    <delete dir="${Component_Root_Dir}\Output"/>
+    </target>
+	
+	<target depends="clean" name="rebuild">
+		<antcall target="ComponentDoc"/>
+	</target>
+</project>

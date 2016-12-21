@@ -1,0 +1,1105 @@
+/*
+  V0.1 Initial Release   10/July/2006  RBR
+
+*/
+
+#include "hal.h"
+#include "halStack.h"
+#include "console.h"
+#include "debug.h"
+#include "ieee_lrwpan_defs.h"
+#include "memalloc.h"
+#include "phy.h"
+#include "mac.h"
+#include "MCR20Reg.h"
+#include "MCR20Drv.h"
+#include "MCR20A_Phy.h"
+
+
+//debug
+#include "evboard.h"
+
+#define MKL46Z_BOARD 1
+#if MKL46Z_BOARD
+#include "Gpio_IrqAdapter.h"
+
+void RADIO_IRQ_Handler();
+void IRQ_Handler();
+
+void MCR20A_InstallIsr()
+{
+    GpioInstallIsr(IRQ_Handler, gGpioIsrPrioHigh_c, 0xC0, kGpioXcvrIrq);
+}
+
+#else
+void MCR20A_InstallIsr()
+{
+}
+
+#endif
+
+#define MCR20A_PAN   0  //PAN0或PAN1，MCR20A具有双PAN功能
+
+
+static volatile RADIO_FLAGS local_radio_flags;  //记录射频模块工作模式状态
+static volatile PHY_FREQ_ENUM freq_pre;      //记录功能
+static volatile BYTE channel_pre;
+
+BYTE rxWaterMark;
+#define RX_TIMEOUT   500 //接收时序超时值,T3每16us一次计数，16us*1000=16ms
+
+phyTime_t count = 0;    //计数器，用于控制LED显示
+
+typedef struct {
+    BYTE seq: 1;
+    BYTE tx: 1;
+    BYTE rx: 1;
+    BYTE cca: 1;
+    BYTE rxWaterMark: 1;
+    BYTE filterFail: 1;
+    BYTE pllUnlock: 1;
+    BYTE rxFramePend: 1;
+} irq_t;
+irq_t irq;
+
+static volatile BOOL radioSeqIdle;  //记录射频模块是否处于IDLE时序，FALSE-不空闲
+static volatile BOOL radioNeedSend;     //是否需要发送数据，FALSE-不需要，此时一直进入RX时序
+
+
+#ifdef  LRWPAN_ASYNC_INTIO  //异步数据收发，采用缓冲处理
+
+static volatile BYTE serio_rxBuff[LRWPAN_ASYNC_RX_BUFSIZE];
+static volatile BYTE serio_rxHead, serio_rxTail;
+
+#endif
+
+static BYTE random_seeded;
+
+
+void MCR20A_SetSeq(uint8_t seq)
+{
+    BYTE phyReg;
+    if(gIdle_c == seq || gTR_c == seq || gTX_c == seq ||
+       gRX_c == seq || gCCA_c == seq) {
+
+        //设置是否空闲
+        if(gIdle_c == seq)
+            radioSeqIdle = TRUE;
+        else
+            radioSeqIdle = FALSE;
+
+        phyReg = MCR20Drv_DirectAccessSPIRead(PHY_CTRL1);
+        phyReg &= ~(cPHY_CTRL1_XCVSEQ);
+        phyReg |= seq ;
+        MCR20Drv_DirectAccessSPIWrite( PHY_CTRL1, phyReg);
+    }
+}
+
+
+/*---------------------------------------------------------------------------
+* @名称: halInit
+* @概述: 初始化硬件设备
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+void halInit(void)
+{
+    //Set clock source
+    local_radio_flags.val = 0;
+    random_seeded = 0;
+
+    radioSeqIdle = TRUE; //初始为空闲状态
+
+
+    //初始化硬件，初始化成MCR20A_PAN
+    MCR20A_HwInit(MCR20A_PAN);
+
+    {
+
+#ifdef LRWPAN_FFD
+
+        uint8_t phyReg;
+        phyTime_t timeOut = 0;
+
+        mStatusAndControlRegs[PHY_IRQSTS1_INDEX_c] =
+            MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[PHY_IRQSTS2_INDEX_c], 7);
+
+        //启动T3计时器，用于硬件自动超时退出RX时序
+
+        MCR20Drv_DirectAccessSPIMultiByteRead(EVENT_TMR_LSB, (BYTE *) &timeOut, 3);
+
+
+        timeOut += 1000;
+        timeOut &= 0x0ffffff;
+        MCR20Drv_DirectAccessSPIMultiByteWrite( T3CMP_LSB, (BYTE *) &timeOut, 3);
+        /* enable autosequence stop by TC3 match */
+        mStatusAndControlRegs[PHY_CTRL4_INDEX_c] |= cPHY_CTRL4_TC3TMOUT;
+        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, mStatusAndControlRegs[PHY_CTRL4_INDEX_c]);
+        //启动接收时序
+        MCR20A_SetSeq(gRX_c);
+        
+    radioNeedSend = FALSE; //初始为需要发送
+#else
+        
+    radioNeedSend = TRUE; //初始为需要发送
+#endif
+    }
+    //SET_MAIN_CLOCK_SOURCE(CRYSTAL);
+    halInitUart();
+    //halSetBaud(LRWPAN_DEFAULT_BAUDRATE);
+    halInitMACTimer();
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halInitUart
+* @概述: 初始化UART设备
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+void halInitUart(void)
+{
+
+
+#ifdef LRWPAN_ASYNC_INTIO
+    serio_rxHead = 0;
+    serio_rxTail = 0;
+    //开启串口中断
+    //INT_ENABLE_URX0(INT_ON);
+#endif
+
+}
+
+#ifdef  LRWPAN_ASYNC_INTIO
+
+
+/*---------------------------------------------------------------------------
+* @名称: halGetch
+* @概述: (缓冲方式)从串口中获取一个字节的数据
+*        (异步方式，直接读缓冲器，数据来源于中断服务)
+*        缓冲器采用循环结构，读取到了最尾部后再重新回到头。
+* @输入: 无
+* @输出: char型数据
+* @备注: 该模块函数与任何硬件无关，可以直接移植。
+*---------------------------------------------------------------------------*/
+char halGetch(void)
+{
+    char x;
+    do {
+        x = serio_rxHead;  //use tmp because of volt decl
+    }  while(serio_rxTail == x);
+    serio_rxTail++;
+    if (serio_rxTail == LRWPAN_ASYNC_RX_BUFSIZE) serio_rxTail = 0;
+    return (serio_rxBuff[serio_rxTail]);
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halInitUart
+* @概述: (缓冲方式)UART是否有数据可读状态。
+*        只要当前缓冲的头标志跟尾部标志不等即认为缓冲有数据。
+* @输入: 无
+* @输出: BOOL型状态
+* @备注: 该模块函数与任何硬件无关，可以直接移植。
+*---------------------------------------------------------------------------*/
+BOOL halGetchRdy(void)
+{
+    char x;
+    x = serio_rxHead;
+    return(serio_rxTail != x);
+}
+
+#else
+
+/*---------------------------------------------------------------------------
+* @名称: halGetch
+* @概述: (直接读取)从串口中获取一个字节的数据
+* @输入: 无
+* @输出: char型数据
+* @备注:
+*---------------------------------------------------------------------------*/
+char halGetch(void)
+{
+    char c;
+
+    return c;
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halGetchRdy
+* @概述: (直接读取)UART是否有数据可读状态。
+* @输入: 无
+* @输出: BOOL型状态
+* @备注:
+*---------------------------------------------------------------------------*/
+BOOL halGetchRdy(void)
+{
+    BOOL ret = 0;
+
+    return ret;
+}
+
+#endif
+
+
+/*---------------------------------------------------------------------------
+* @名称: halUtilMemCopy
+* @概述: 内存拷贝
+* @输入: 无
+* @输出: 无
+* @备注: 该模块函数与任何硬件无关，可以直接移植。
+*---------------------------------------------------------------------------*/
+void halUtilMemCopy(BYTE *dst, BYTE *src, BYTE len)
+{
+    while (len) {
+        *dst = *src;
+        dst++;
+        src++;
+        len--;
+    }
+}
+
+// assuming 16us period, have 1/16us = 62500 tics per seocnd
+#define T2CMPVAL (62500/SLOWTICKS_PER_SECOND)
+
+
+/*---------------------------------------------------------------------------
+* @名称: halInitMACTimer
+* @概述: 初始化MAC时钟
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+void halInitMACTimer(void)
+{
+
+
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halGetMACTimer
+* @概述: 获取MAC时钟
+*        获取MCR20A的时间值，用于计算CCA
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+UINT32 halGetMACTimer(void)
+{
+    return MCR20A_GetMACTimer();
+}
+
+#ifdef LRWPAN_COMPILER_NO_RECURSION
+
+/*---------------------------------------------------------------------------
+* @名称: halISRGetMACTimer
+* @概述: 中断获取MAC时钟
+*        获取MCR20A的时间值，用于计算CCA
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+UINT32 halISRGetMACTimer(void)
+{
+    return MCR20A_GetMACTimer();
+}
+
+#endif
+
+
+
+
+/*---------------------------------------------------------------------------
+* @名称: halMacTicksToUs
+* @概述: 计算一个us需要的Ticks数
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+UINT32 halMacTicksToUs(UINT32 ticks)
+{
+
+    UINT32 rval;
+    //ticks/SYMBOLS_PER_MAC_TICK *16
+    rval =  (ticks / SYMBOLS_PER_MAC_TICK()) * (1000000 / LRWPAN_SYMBOLS_PER_SECOND);
+    return(rval);
+}
+
+
+/*---------------------------------------------------------------------------
+* @名称: halGetRandomByte
+* @概述: 获取一个字节的随机数
+* @输入: 无
+* @输出: UINT8型的随机数
+* @备注:
+*---------------------------------------------------------------------------*/
+UINT8 halGetRandomByte(void)
+{
+    UINT8 byte = 0;
+    UINT32 u32 = 0; //存储32位数据
+
+#if MCR20A_RNG_ENABLE   //使用MCR20A芯片自带的RNG发生器，建议不开启
+
+    MCR20A_GetRandomNo((uint32_t *)&u32);
+#else   //使用STM32_CPU 的RNG随机数发生器，能有效提高效率
+
+    while(RNG_GetFlagStatus(RNG_FLAG_DRDY) == RESET);  //等待随机数准备完毕
+    u32 = RNG_GetRandomNumber();  //读数
+
+#endif
+
+    byte = (UINT8)u32; //截取8位数据
+    return(byte);
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halPutch
+* @概述: 串口写一个字节的数
+* @输入: char型数据
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+void halPutch(char c)
+{
+
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halRawPut
+* @概述: 串口写一个字节的数(与halPutch等同)
+* @输入: char型数据
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+void halRawPut(char c)
+{
+
+}
+
+
+
+/*---------------------------------------------------------------------------
+* @名称: halSetChannel
+* @概述: 设置2.4GHz下射频模块的通道
+* @输入: BYTE channel-通道
+* @输出: LRWPAN_STATUS_ENUM枚举类型的状态值
+* @备注: 在2.4G下通道已经决定了频率的具体值
+*---------------------------------------------------------------------------*/
+LRWPAN_STATUS_ENUM halSetChannel(BYTE channel)
+{
+    if ((channel < 11) || (channel > 26))
+        return(LRWPAN_STATUS_PHY_FAILED);
+
+    MCR20A_SetCurrentChannelRequest(channel, MCR20A_PAN);   //默认采用PAN0
+
+    return LRWPAN_STATUS_SUCCESS;
+}
+
+
+/*---------------------------------------------------------------------------
+* @名称: halSetRadioIEEEFrequency
+* @概述: 设置射频模块的频率和通道
+* @输入: BYTE *buf -地址存放首地址
+* @输出: 无
+* @备注: 1.大端存储地址 ； 2.如果空间紧张可以存放在FLAH中
+*---------------------------------------------------------------------------*/
+
+LRWPAN_STATUS_ENUM halSetRadioIEEEFrequency(PHY_FREQ_ENUM frequency, BYTE channel)
+{
+    //只支持2.4G
+    if(PHY_FREQ_2405M != frequency)
+        return LRWPAN_STATUS_PHY_FAILED;    //直接退出
+
+    return halSetChannel(channel);
+}
+
+
+/*---------------------------------------------------------------------------
+* @名称: halGetProcessorIEEEAddress
+* @概述: 从FLASH中获取IEEE地址
+* @输入: BYTE *buf -地址存放首地址
+* @输出: 无
+* @备注: 1.大端存储地址 ； 2.如果空间紧张可以存放在FLAH中
+*---------------------------------------------------------------------------*/
+
+void halGetProcessorIEEEAddress(BYTE *buf)
+{
+    buf[0] = aExtendedAddress_B0;
+    buf[1] = aExtendedAddress_B1;
+    buf[2] = aExtendedAddress_B2;
+    buf[3] = aExtendedAddress_B3;
+    buf[4] = aExtendedAddress_B4;
+    buf[5] = aExtendedAddress_B5;
+    buf[6] = aExtendedAddress_B6;
+    buf[7] = aExtendedAddress_B7;
+}
+
+
+
+
+/*---------------------------------------------------------------------------
+* @名称: halSetRadioIEEEAddress
+* @概述: 将IEEE地址设置到MCR20A射频芯片
+* @输入: 无
+* @输出: 无
+* @备注: IEEE地址必须保证每个节点是唯一的
+*---------------------------------------------------------------------------*/
+
+void halSetRadioIEEEAddress(void)
+{
+    BYTE buf[8];
+    halGetProcessorIEEEAddress(buf);
+
+    MCR20A_SetLongAddr(buf, MCR20A_PAN);
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halSetRadioPANID
+* @概述: 设置射频芯片的PANID值
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+void halSetRadioPANID(UINT16 panid)
+{
+    MCR20A_SetPanId((uint8_t *)&panid, MCR20A_PAN);
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halSetRadioShortAddr
+* @概述: 设置射频芯片的网络地址
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+void halSetRadioShortAddr(SADDR saddr)
+{
+    MCR20A_SetShortAddr((uint8_t *)&saddr, MCR20A_PAN);
+}
+
+
+
+//return value of non-zero indicates failure
+//Turn on Radio, initialize for RF mode
+//assumes that auto-ack is enabled
+//this function based on sppInit example from ChipCon
+//also sets the IEEE address
+//if listen_flag is true, then radio is configured for
+//listen only (no auto-ack, no address recognition)
+
+/*
+Eventually, change this so that auto-ack can be configured as
+on or off. When Coordinator is trying to start a network,
+auto-ack, addr decoding will be off as Coordinator will be doing an energy
+scan and detecting PAN collisions, and thus will not be doing
+any acking of packets. After the network is started, then
+will enable auto-acking.
+Routers and End devices will always auto-ack
+
+i
+*/
+
+
+
+/*---------------------------------------------------------------------------
+* @名称: halSetRadioShortAddr
+* @概述: 设置射频芯片的网络地址
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+LRWPAN_STATUS_ENUM halInitRadio(PHY_FREQ_ENUM frequency, BYTE channel, RADIO_FLAGS radio_flags)
+{
+    LRWPAN_STATUS_ENUM status;
+
+    if(freq_pre != frequency || channel_pre != channel) {
+        freq_pre = frequency;
+
+        halSetRadioIEEEAddress();
+        //设置射频模块的频率和通道
+        status = halSetRadioIEEEFrequency(frequency, channel);
+        if (status != LRWPAN_STATUS_SUCCESS)
+            return(status);
+    }
+    //射频模块上电
+
+    //MCR20A_WARMUP();
+
+    if(local_radio_flags.bits.listen_mode != radio_flags.bits.listen_mode) {
+        //listen_mode=1开启混乱模式(DEBUG模式)，listen_mode=0为正常模式
+        if (radio_flags.bits.listen_mode ) { //DEBUG模式，接收所有数据帧
+            MCR20A_SetPromiscuous(TRUE);
+        } else {
+            //正常模式，只接受特定的数据帧
+            MCR20A_SetPromiscuous(FALSE);
+        }
+        //PAN_COORDINATOR 是否是协调器，协调器接收所有地址的数据，否则只接受自己为目标的数据
+        if (radio_flags.bits.pan_coordinator) {
+            //设置为PAN_COORDINATOR模式，接收所有地址的数据
+            MCR20A_SetMacRole(PAN_COORDINATOR, MCR20A_PAN);
+        } else {
+            //只接受目标地址为自己的数据
+            MCR20A_SetMacRole(PAN_ENDDIVCE, MCR20A_PAN);
+        }
+
+        local_radio_flags = radio_flags;  //记录射频模式状态
+    }
+
+
+
+
+    return(LRWPAN_STATUS_SUCCESS);
+}
+
+#define PIN_CCA   CCA    //CCA is defined in hal.h
+
+//regardless of what happens here, we will try TXONCCA after this returns.
+
+
+/*---------------------------------------------------------------------------
+* @名称: doIEEE_backoff
+* @概述: 进行CCA冲突避免
+* @输入: 无
+* @输出: 无
+* @备注: 最好MCR20A硬件初始化时，设置为CCABeforeTx。
+*---------------------------------------------------------------------------*/
+
+void  doIEEE_backoff(void)
+{
+    BYTE be, nb, tmp, rannum;
+    UINT32  delay, start_tick;
+
+    be = aMinBE;
+    nb = 0;
+    do {
+        if (be) {
+            //do random delay
+            tmp = be;
+            //compute new delay
+            delay = 1;
+            while (tmp) {
+                delay = delay << 1;  //delay = 2**be;
+                tmp--;
+            }
+            rannum =  halGetRandomByte() & (delay - 1); //rannum will be between 0 and delay-1
+            delay = 0;
+            while (rannum) {
+                delay  += SYMBOLS_TO_MACTICKS(aUnitBackoffPeriod);
+                rannum--;
+            }//delay = aUnitBackoff * rannum
+            //now do backoff
+            start_tick = halGetMACTimer();
+            while (halMACTimerNowDelta(start_tick) < delay);
+        }
+        //check CCA
+        //检查CCA状态，如果CCA结束，则立即退出
+#if 0
+        if (PIN_CCA)
+            break;
+#else
+
+        MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[PHY_IRQSTS2_INDEX_c], 1);
+        if( mStatusAndControlRegs[PHY_IRQSTS2_INDEX_c] & cIRQSTS2_CCA ) {
+            //busy
+        } else  //CCA检查发现IDLE
+            break;
+#endif
+        nb++;
+        be++;
+        if (be > aMaxBE) be = aMaxBE;
+    } while (nb <= macMaxCSMABackoffs); //最大重试5次，[0,4]
+    return;
+}
+
+
+//transmit packet
+//hdrlen - header lenth
+//hdr - pointer to header data
+//plen - payload length
+//pload - pointer to payload
+
+
+/*---------------------------------------------------------------------------
+* @名称: halSendPacket
+* @概述: 硬件发送数据包
+* @输入: BYTE flen-帧长度，BYTE *frm-帧数据的首地址
+* @输出: 返回状态
+* @备注: flen帧长度不包括2个字节的CRC(射频模块自动添加)
+*---------------------------------------------------------------------------*/
+
+LRWPAN_STATUS_ENUM halSendPacket(BYTE flen, BYTE *frm)
+{
+    BYTE len;
+    LRWPAN_STATUS_ENUM res;
+    BYTE phyReg;
+
+    BYTE tmpbuf[LRWPAN_MAX_FRAME_SIZE + 1]; //maximum payload size
+    BYTE *ptr;
+    BYTE seqState = 0;
+    UINT32 timeOut = 0; //T3超时计数器
+
+    EVB_LED1_ON();
+
+    //total length, does not include length byte itself
+    //last two bytes are the FCS bytes that are added automatically
+    if (flen + PACKET_FOOTER_SIZE > 127) {
+        //packet size is too large!
+        return(LRWPAN_STATUS_PHY_TX_PKT_TOO_BIG);
+    }
+
+    //置发送标识为TRUE，退出RX时序
+    radioNeedSend = TRUE;
+
+    //准备数据
+    ptr = &tmpbuf[0];
+    *ptr = flen + PACKET_FOOTER_SIZE; //length does not include length byte
+    ptr++;
+    //copy frame
+    memcpy(ptr, frm, flen);
+
+    while(radioSeqIdle != TRUE) ; //等待时序空闲，该标识在RX中断中设置
+    if(radioSeqIdle) {
+        //关闭MCU中断，不处理MCR20内存中断寄存器
+        MCR20Drv_IRQ_Disable();
+        MCR20Drv_IRQ_Clear();
+
+
+        //写数据到射频芯片
+        MCR20Drv_PB_SPIBurstWrite(tmpbuf, flen + 1);
+
+        //启动T3计时器，用于硬件自动超时退出RX时序
+        MCR20Drv_DirectAccessSPIMultiByteRead(EVENT_TMR_LSB, (BYTE *) &timeOut, 3);
+        timeOut += RX_TIMEOUT;
+        timeOut &= 0x0ffffff;   //24位有效
+        MCR20Drv_DirectAccessSPIMultiByteWrite( T3CMP_LSB, (BYTE *) &timeOut, 3);
+        /* enable autosequence stop by TC3 match */
+        mStatusAndControlRegs[PHY_CTRL4_INDEX_c] |= cPHY_CTRL4_TC3TMOUT;
+        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, mStatusAndControlRegs[PHY_CTRL4_INDEX_c]);
+
+        /* 启动TR时序 ，确保硬件开启CCABFRTX*/
+        MCR20A_SetSeq(gTR_c);
+
+        phyTxStartCallBack();
+
+        radioNeedSend = FALSE;  //表示发送完了不需要发送时序
+
+        MCR20Drv_IRQ_Enable();
+
+        res = LRWPAN_STATUS_SUCCESS;
+    } else {
+        res = LRWPAN_STATUS_PHY_CHANNEL_BUSY;
+    }//endof if radioSeqIdle
+
+    return  res;
+}
+
+
+
+#ifdef  LRWPAN_ASYNC_INTIO
+
+/*---------------------------------------------------------------------------
+* @名称: urx0_service_IRQ
+* @概述: UART0中断服务程序
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+INTERRUPT_FUNC urx0_service_IRQ(void)
+{
+
+    BYTE x, y;
+
+    serio_rxHead++;
+    if (serio_rxHead == LRWPAN_ASYNC_RX_BUFSIZE ) serio_rxHead = 0;
+    x = serio_rxHead;  //use tmp variables because of Volatile decl
+    //y = U0DBUF; //获取数据
+    serio_rxBuff[x] = y;
+}
+
+#endif
+
+
+
+//This timer interrupt is the periodic interrupt for
+//evboard functions
+
+#undef LRWPAN_ENABLE_SLOW_TIMER
+#ifdef LRWPAN_ENABLE_SLOW_TIMER
+
+
+// assuming 16us period, have 1/16us = 62500 tics per seocnd
+#define T2CMPVAL (62500/SLOWTICKS_PER_SECOND)
+
+/*---------------------------------------------------------------------------
+* @名称: t2_service_IRQ
+* @概述: T2中断服务程序，任务调度使用
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+INTERRUPT_FUNC t2_service_IRQ(void)
+{
+    UINT32 t;
+
+    INT_GLOBAL_ENABLE(INT_OFF);
+    INT_SETFLAG_T2(INT_CLR); //clear processor interrupt flag
+    //compute next compare value by reading current timer value, adding offset
+    t = 0x0FF & T2OF0;
+    t += (((UINT16)T2OF1) << 8);
+    t += (((UINT32) T2OF2 & 0x0F) << 16);
+    t += T2CMPVAL;  //add offset
+    T2PEROF0 = t & 0xFF;
+    T2PEROF1 = (t >> 8) & 0xFF;
+    //enable overflow count compare interrupt
+    T2PEROF2 = ((t >> 16) & 0x0F) | 0x20;
+    T2CNF = 0x03; //this clears the timer2 flags
+    evbIntCallback();  //Evaluation board callback
+    usrSlowTimerInt();  //user level interrupt callback
+    INT_GLOBAL_ENABLE(INT_ON);
+}
+#endif
+
+
+
+
+
+
+//发送空闲状态，置射频模块为接收状态
+void  halIdle()
+{
+    BYTE phyReg = 0;
+    BYTE seqState = 0;
+    phyTime_t timeOut = 0;
+    seqState = MCR20Drv_DirectAccessSPIRead(SEQ_STATE) & 0x1F;
+
+
+
+    //射频芯片正常工作起来是应该一直处于RX或TX状态，只有在中断处理函数中会处于空闲
+    //万一芯片处于空闲但是又没有进入中断函数则需要该代码将其置为RX状态，并触发中断函数
+    if(0 == seqState) {
+//启动T3计时器，用于硬件自动超时退出RX时序
+
+        MCR20Drv_DirectAccessSPIMultiByteRead(EVENT_TMR_LSB, (BYTE *) &timeOut, 3);
+        timeOut += RX_TIMEOUT;
+        timeOut &= 0x0FFFFFF;
+        MCR20Drv_DirectAccessSPIMultiByteWrite( T3CMP_LSB, (BYTE *) &timeOut, 3);
+        /* enable autosequence stop by TC3 match */
+        mStatusAndControlRegs[PHY_CTRL4_INDEX_c] |= cPHY_CTRL4_TC3TMOUT;
+        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, mStatusAndControlRegs[PHY_CTRL4_INDEX_c]);
+
+        //进入RX时序
+        phyReg = mStatusAndControlRegs[PHY_CTRL1_INDEX_c];
+        phyReg &= ~(cPHY_CTRL1_XCVSEQ);
+        phyReg |= gRX_c ;
+        MCR20Drv_DirectAccessSPIWrite( PHY_CTRL1, phyReg);
+    }
+}
+
+
+
+void evbPoll()
+{
+
+}
+
+
+void halRadioGetFrame(BYTE flen)
+{
+
+    BYTE ack_bytes[LRWPAN_ACKFRAME_LENGTH];
+    BYTE rssi = 0;
+    BYTE *ptr, *rx_frame;
+
+    BYTE delayTmp = 50;
+
+    if(0 == flen || flen > 127)   //非法长度，直接退出
+        return ;
+
+    if(LRWPAN_ACKFRAME_LENGTH == flen) {
+        //ACK
+        ack_bytes[0] = flen;
+        //MCR20A缓冲中CRC2字节硬件自动校验，不需要读取,实际读取长度flen-2
+        MCR20Drv_PB_SPIBurstRead( (uint8_t *)(ack_bytes + 1), flen - 2);
+        macRxCallback(ack_bytes, ack_bytes[4]);
+    } else {
+
+        if (!macRxBuffFull()) {
+            //MAC TX buffer has room
+            //allocate new memory space
+            //read the length
+            rx_frame = MemAlloc(flen + 1);
+            //memset(rx_frame, 0, flen + 1);
+            ptr = rx_frame;
+        } else {
+            //MAC RX buffer is full
+            DEBUG_CHAR( DBG_ITRACE, DBG_CHAR_MACFULL );
+        }
+        if (ptr == NULL) {
+            //无内存，不处理
+        } else {
+            //添加数据长度，1个字节
+            *ptr = flen;
+            ptr++;
+            //MCR20A缓冲中CRC2字节硬件自动校验，不需要读取,实际读取长度flen-2
+            MCR20Drv_PB_SPIBurstRead( (uint8_t *)(ptr), flen - 2);
+
+
+            rssi = MCR20Drv_DirectAccessSPIRead(LQI_VALUE);
+            if(0 == rssi) {
+                while(delayTmp--);        //等待一段时间，具体多少时间有待验证
+                rssi = MCR20Drv_DirectAccessSPIRead(LQI_VALUE);
+            }
+            //将RSSI值从2的次方表示转换成 0~0XFF的数值 MCR20Drv_DirectAccessSPIRead(LQI_VALUE);不需要再处理
+            rssi = MCR20A_LqiConvert(rssi);
+
+            //处理PHY回调函数
+            phyRxCallback();
+            macRxCallback(rx_frame, rssi);
+        }
+    }
+}
+//cPHY_CTRL2_SEQMSK开启SEQ中断，采用中断收发
+//不能接收到ACK(ACK发送间隔在10ms之内，由硬件自动发送，接收响应不过来)
+void IRQ_Handler()
+{
+
+    BYTE xcvseq = 0;
+    BYTE flen = 0;
+    UINT32 timeOut;
+
+    /* Disable and clear transceiver(IRQ_B) interrupt */
+    MCR20Drv_IRQ_Disable();
+    MCR20Drv_IRQ_Clear();
+
+    count++;
+    if(count % 5 == 0) {
+        EVB_LED1_OFF();
+    } else {
+        EVB_LED1_ON();
+    }
+
+    mStatusAndControlRegs[PHY_IRQSTS1_INDEX_c] =
+        MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[PHY_IRQSTS2_INDEX_c], 7);
+    //清中断标志
+    MCR20Drv_DirectAccessSPIMultiByteWrite(IRQSTS1, mStatusAndControlRegs, 3);
+
+    //获取当前中断类型
+    halUtilMemCopy((BYTE *)&irq, mStatusAndControlRegs, 1);
+    //获取当前时序控制器的状态
+    xcvseq = mStatusAndControlRegs[PHY_CTRL1_INDEX_c] & cPHY_CTRL1_XCVSEQ;
+
+    //保存数据长度
+    flen = mStatusAndControlRegs[PHY_RX_FRM_LEN_INDEX_c];
+
+
+    //debug调试使用
+    if(LRWPAN_ACKFRAME_LENGTH == flen) {
+        flen = 5;
+    }
+//开启TX中断，但是时序不设置为TX，
+    if(irq.tx) {
+        phyTxEndCallBack();
+        macTxCallback();
+    }
+    
+//启动T3计时器，用于硬件自动超时退出RX时序
+    MCR20Drv_DirectAccessSPIMultiByteRead(EVENT_TMR_LSB, (BYTE *) &timeOut, 3);
+
+    if(timeOut - RX_TIMEOUT > 0) {
+
+    }
+
+    //如果接收标志有效表示一个完整的数据包接收完成，直接处理
+    if(irq.rx) {
+        halRadioGetFrame(flen);
+    }
+    //!irq.rx 且 irq.rxWaterMark
+    else if(irq.rxWaterMark) {
+
+        if(0 == rxWaterMark) {    //
+            if(gRX_c == xcvseq || gTR_c == xcvseq) {
+                if(irq.seq) { //接收到一个完整的数据帧
+
+                    halRadioGetFrame(flen);
+
+                } else { //只收到一个帧头，重写WATERMARK
+                    rxWaterMark = flen - 2;
+                    MCR20Drv_IndirectAccessSPIWrite(RX_WTR_MARK, rxWaterMark);
+
+                    MCR20Drv_IRQ_Enable();
+                    return ;    //直接退出等待下一个 RXWATERMKIRQ或RXIRQ
+                }
+            }
+        } else {  //接收到完整的数据帧
+
+            //设置RXwatermark为0
+            rxWaterMark = 0;
+            MCR20Drv_IndirectAccessSPIWrite(RX_WTR_MARK, rxWaterMark);
+
+            halRadioGetFrame(flen);
+        }//endof if 0==rxWaterMark
+    }//endof if irq.rxWaterMark
+    
+
+    if(irq.seq) {
+        if(radioNeedSend) {
+            //置为空闲时序状态
+            radioSeqIdle = TRUE;
+        } else {
+
+            //启动T3计时器，用于硬件自动超时退出RX时序
+            MCR20Drv_DirectAccessSPIMultiByteRead(EVENT_TMR_LSB, (BYTE *) &timeOut, 3);
+            timeOut += RX_TIMEOUT;
+            timeOut &= 0x0ffffff;   //24位有效
+            MCR20Drv_DirectAccessSPIMultiByteWrite( T3CMP_LSB, (BYTE *) &timeOut, 3);
+            /* enable autosequence stop by TC3 match */
+            mStatusAndControlRegs[PHY_CTRL4_INDEX_c] |= cPHY_CTRL4_TC3TMOUT;
+            MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, mStatusAndControlRegs[PHY_CTRL4_INDEX_c]);
+            MCR20A_SetSeq(gRX_c);
+        }
+    }
+
+    usrIntCallback();
+
+    MCR20Drv_IRQ_Enable();
+
+
+}//endof IRQ_Handler
+
+
+
+
+//software delay, waits is in milliseconds
+/*---------------------------------------------------------------------------
+* @名称: halWait
+* @概述: 软件延迟(单位:0.01ms)
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+void halWait(BYTE wait)
+{
+    UINT32 largeWait = 1;
+
+    if(wait == 0) {
+        return;
+    }
+#if 0
+    largeWait = ((UINT16) (wait << 7));
+    largeWait += 114 * wait;
+
+
+    largeWait = (largeWait >> CLKSPD);
+#else
+    //计算一个延迟值，保证延迟单位在0.01ms
+#endif
+
+    while(largeWait--);
+
+    return;
+}
+
+/*---------------------------------------------------------------------------
+* @名称: halWaitMs
+* @概述: 软件延迟(单位:ms)
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+void halWaitMs(const UINT32 msecs)
+{
+    UINT32 towait;
+
+    towait = msecs;
+    while (towait > 100) {
+        halWait(100);
+        towait -= 100;
+    }
+    halWait(towait);
+}
+
+
+/*---------------------------------------------------------------------------
+* @名称: halShutdown
+* @概述: 关闭
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+void halShutdown(void)
+{
+    //disable some interrupts
+#ifdef LRWPAN_ENABLE_SLOW_TIMER
+    INT_ENABLE_T2(INT_OFF);
+#endif
+
+    //关闭MCR20A中断
+    //清零MCR20A中断
+    //将MCR20A设置为IDLE状态
+    MCR20A_Abort();
+
+}
+
+
+/*---------------------------------------------------------------------------
+* @名称: halWarmstart
+* @概述: 射频模块热启动
+* @输入: 无
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+void halWarmstart(void)
+{
+#if 0
+    UINT32 myticks;
+    //re-enable the timer interrupt
+#ifdef LRWPAN_ENABLE_SLOW_TIMER
+    INT_ENABLE_T2(INT_ON);
+#endif
+    //turn on the radio again
+    RFPWR = RFPWR & ~(1 << 3);  //RFPWR.RREG_RADIO_PD = 0;
+    //wait for power to stabilize
+    myticks = halGetMACTimer();
+    while (halMACTimerNowDelta(myticks) < MSECS_TO_MACTICKS(10)) {
+        //check the power up bit, max time is supposed to be 2 ms
+        if (!(RFPWR & ~(1 << 4))) break;
+    }
+
+#endif
+}
+
+
+
+
+/*---------------------------------------------------------------------------
+* @名称: halSleep
+* @概述: 射频模块休眠
+* @输入: UINT32 msecs-休眠时间
+* @输出: 无
+* @备注:
+*---------------------------------------------------------------------------*/
+
+void halSleep(UINT32 msecs)
+{
+    //判定射频模块是否处于IDLE状态
+    //如果是IDLE则进入休眠
+
+    //关闭所有中断(射频相关)
+    //清中断标志
+
+    //设置射频模块的休眠定时器
+
+    //设置射频模块为低功耗模式
+
+    //打开射频模块的中断
+
+}
+
+
