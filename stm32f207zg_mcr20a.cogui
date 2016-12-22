@@ -11,38 +11,13 @@
 <folder appearance="1" expanded="2">
 <presentation id="org.eclipse.ui.presentations.WorkbenchPresentationFactory">
 <part id="0"/>
-<part id="1"/>
-<part id="2"/>
-<part id="3"/>
-<part id="4"/>
-<part id="5"/>
 </presentation>
 </folder>
 </info>
 </editorArea>
-<editor activePart="true" focus="true" id="org.eclipse.cdt.ui.editor.CEditor" name="iap.c" partName="iap.c" path="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/iap.c" title="iap.c" tooltip="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/iap.c" workbook="DefaultEditorWorkbook">
-<input factoryID="org.eclipse.ui.part.FileEditorInputFactory" path="/stm32f207zg_mcr20a/App/iap.c"/>
-<editorState selectionHorizontalPixel="0" selectionLength="0" selectionOffset="148" selectionTopPixel="51"/>
-</editor>
-<editor id="org.eclipse.cdt.ui.editor.CEditor" name="iap.h" partName="iap.h" path="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/iap.h" title="iap.h" tooltip="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/iap.h" workbook="DefaultEditorWorkbook">
-<input factoryID="org.eclipse.ui.part.FileEditorInputFactory" path="/stm32f207zg_mcr20a/App/iap.h"/>
-<editorState selectionHorizontalPixel="0" selectionLength="0" selectionOffset="0" selectionTopPixel="0"/>
-</editor>
-<editor id="org.eclipse.cdt.ui.editor.CEditor" name="md5.h" partName="md5.h" path="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/Libraries/MD5/md5.h" title="md5.h" tooltip="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/Libraries/MD5/md5.h" workbook="DefaultEditorWorkbook">
-<input factoryID="org.eclipse.ui.part.FileEditorInputFactory" path="/stm32f207zg_mcr20a/lib/MD5/md5.h"/>
-<editorState selectionHorizontalPixel="0" selectionLength="0" selectionOffset="2389" selectionTopPixel="765"/>
-</editor>
-<editor id="org.eclipse.cdt.ui.editor.CEditor" name="stddef.h" partName="stddef.h" title="stddef.h" tooltip="C:\ARM_TOOLS\5.4 2016q3\lib\gcc\arm-none-eabi\5.4.1\include\stddef.h" workbook="DefaultEditorWorkbook">
-<input factoryID="org.eclipse.cdt.ui.ExternalEditorInputFactory" path="C:\ARM_TOOLS\5.4 2016q3\lib\gcc\arm-none-eabi\5.4.1\include\stddef.h" project="stm32f207zg_mcr20a"/>
-<editorState selectionHorizontalPixel="0" selectionLength="6" selectionOffset="7333" selectionTopPixel="2720"/>
-</editor>
-<editor id="org.eclipse.cdt.ui.editor.CEditor" name="board.h" partName="board.h" path="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/board.h" title="board.h" tooltip="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/board.h" workbook="DefaultEditorWorkbook">
-<input factoryID="org.eclipse.ui.part.FileEditorInputFactory" path="/stm32f207zg_mcr20a/App/board.h"/>
-<editorState selectionHorizontalPixel="0" selectionLength="0" selectionOffset="8137" selectionTopPixel="2533"/>
-</editor>
-<editor id="org.eclipse.cdt.ui.editor.CEditor" name="stack_entry.c" partName="stack_entry.c" path="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/Libraries/MSSTATEPAN/stackEntrance/stack_entry.c" title="stack_entry.c" tooltip="C:/D_PAN/lxm/STM32_board_prj/COIDE_prj/stm32f207zg_mcr20a_LATEST/app/Libraries/MSSTATEPAN/stackEntrance/stack_entry.c" workbook="DefaultEditorWorkbook">
-<input factoryID="org.eclipse.ui.part.FileEditorInputFactory" path="/stm32f207zg_mcr20a/lib/MSSTATEPAN/stackEntrance/stack_entry.c"/>
-<editorState selectionHorizontalPixel="0" selectionLength="0" selectionOffset="7132" selectionTopPixel="2601"/>
+<editor activePart="true" focus="true" id="org.eclipse.cdt.ui.editor.CEditor" name="main.c" partName="main.c" path="C:/Users/Malik/iot_rzb_zg/app/main.c" title="main.c" tooltip="C:/Users/Malik/iot_rzb_zg/app/main.c" workbook="DefaultEditorWorkbook">
+<input factoryID="org.eclipse.ui.part.FileEditorInputFactory" path="/stm32f207zg_mcr20a/App/main.c"/>
+<editorState selectionHorizontalPixel="0" selectionLength="0" selectionOffset="1537" selectionTopPixel="921"/>
 </editor>
 </editors>
 <views>
@@ -62,7 +37,7 @@
 <element path="/stm32f207zg_mcr20a/lib"/>
 </expanded>
 <selection>
-<element path="/stm32f207zg_mcr20a/App/board_config.h"/>
+<element path="/stm32f207zg_mcr20a"/>
 </selection>
 </viewState>
 </view>
@@ -307,16 +282,9 @@
 <editor factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" path="/stm32f207zg_mcr20a/App/main.c"/>
 <editor factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" path="/stm32f207zg_mcr20a/App/board_config.h"/>
 <editor factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" path="/stm32f207zg_mcr20a/App/iap.c"/>
+<editor factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" path="/stm32f207zg_mcr20a/App/main.c"/>
+<editor factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" path="/stm32f207zg_mcr20a/App/board.c"/>
 </editors>
-<item historyLabel="iap.c" index="0">
-<position info="not_deleted" x="1178" y="0"/>
-</item>
-<item historyLabel="iap.c" index="0">
-<position info="not_deleted" x="1220" y="0"/>
-</item>
-<item historyLabel="iap.c" index="0">
-<position info="not_deleted" x="1178" y="0"/>
-</item>
 <item historyLabel="iap.c" index="0">
 <position info="not_deleted" x="1220" y="0"/>
 </item>
@@ -451,8 +419,17 @@
 <item historyLabel="board_config.h" index="11">
 <position info="not_deleted" x="5452" y="0"/>
 </item>
-<item active="true" historyLabel="iap.c" index="12">
-<position info="not_deleted" x="2273" y="12"/>
+<item historyLabel="iap.c" index="12">
+<position info="not_deleted" x="335" y="0"/>
+</item>
+<item historyLabel="main.c" index="13">
+<position info="not_deleted" x="1500" y="0"/>
+</item>
+<item historyLabel="board.c" index="14">
+<position info="not_deleted" x="0" y="0"/>
+</item>
+<item active="true" historyLabel="main.c" index="13">
+<position info="not_deleted" x="1500" y="0"/>
 </item>
 </navigationHistory>
 <input factoryID="org.eclipse.ui.internal.model.ResourceFactory" path="/" type="8"/>
@@ -461,6 +438,15 @@
 <actionBarAdvisor/>
 </window>
 <mruList>
+<file factoryID="org.eclipse.ui.ide.FileStoreEditorInputFactory" id="org.eclipse.ui.systemExternalEditor" name="README.md" tooltip="C:\Users\Malik\iot_rzb_zg\README.md">
+<persistable uri="file:/C:/Users/Malik/iot_rzb_zg/README.md"/>
+</file>
+<file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="board.c" tooltip="stm32f207zg_mcr20a/App/board.c">
+<persistable path="/stm32f207zg_mcr20a/App/board.c"/>
+</file>
+<file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="main.c" tooltip="stm32f207zg_mcr20a/App/main.c">
+<persistable path="/stm32f207zg_mcr20a/App/main.c"/>
+</file>
 <file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="stack_entry.c" tooltip="stm32f207zg_mcr20a/lib/MSSTATEPAN/stackEntrance/stack_entry.c">
 <persistable path="/stm32f207zg_mcr20a/lib/MSSTATEPAN/stackEntrance/stack_entry.c"/>
 </file>
@@ -482,12 +468,6 @@
 <file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="iap.h" tooltip="stm32f207zg_mcr20a/App/iap.h">
 <persistable path="/stm32f207zg_mcr20a/App/iap.h"/>
 </file>
-<file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="main.c" tooltip="stm32f207zg_mcr20a/App/main.c">
-<persistable path="/stm32f207zg_mcr20a/App/main.c"/>
-</file>
-<file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="board.c" tooltip="stm32f207zg_mcr20a/App/board.c">
-<persistable path="/stm32f207zg_mcr20a/App/board.c"/>
-</file>
 <file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="gdb_1kxmodem.c" tooltip="stm32f207zg_mcr20a/App/gdb_1kxmodem.c">
 <persistable path="/stm32f207zg_mcr20a/App/gdb_1kxmodem.c"/>
 </file>
@@ -502,9 +482,6 @@
 </file>
 <file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="board.h" tooltip="stm32f207zg_mcr20a/App/board.h">
 <persistable path="/stm32f207zg_mcr20a/App/board.h"/>
-</file>
-<file factoryID="org.eclipse.ui.part.FileEditorInputFactory" id="org.eclipse.cdt.ui.editor.CEditor" name="xprintf.h" tooltip="stm32f207zg_mcr20a/App/xprintf.h">
-<persistable path="/stm32f207zg_mcr20a/App/xprintf.h"/>
 </file>
 </mruList>
 </workbench>
